@@ -2,61 +2,60 @@
 //  LoadingView.swift
 //  YT music
 //
-//  Pantalla de carga estilo YouTube: fondo oscuro con una barra roja fina y fija
-//  arriba que se llena de izquierda a derecha según el progreso real, con un
-//  "peg" luminoso en el borde de avance (el detalle característico de YouTube /
-//  NProgress).
+//  Transición entre servicios (YouTube Music ↔ YouTube). Sobre un fondo negro,
+//  una tarjeta con el símbolo del servicio de DESTINO (nota / ▶) latiendo, y el
+//  efecto "border beam" (paquete BorderBeamKit) recorriendo su borde redondeado.
 //
 
 import SwiftUI
+import BorderBeamKit
 
 struct LoadingView: View {
-    /// Progreso de carga, de 0 a 1.
+    /// Servicio de destino (hacia el que se está cargando).
+    var mode: ServiceMode
+    /// Progreso de carga, de 0 a 1 (reservado; el haz es indeterminado).
     var progress: Double
 
-    private let barHeight: CGFloat = 3
-    private let red = Color(red: 1.0, green: 0.0, blue: 51/255) // #FF0033
+    /// Controla la entrada elástica del contenido.
+    @State private var appear = false
+
+    /// Lado de la tarjeta. El radio del borde es la mitad → círculo perfecto,
+    /// y el haz sigue ese mismo radio para recorrer el borde redondo.
+    private let side: CGFloat = 96
+    private var cornerRadius: CGFloat { side / 2 }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                bar
-                Spacer(minLength: 0)
+            VStack(spacing: 16) {
+                BorderBeam(size: .sm, colorVariant: .colorful, borderRadius: cornerRadius) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.04))
+                        Image(systemName: mode == .music ? "music.note" : "play.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .symbolEffect(.pulse, options: .repeating)
+                    }
+                    .frame(width: side, height: side)
+                }
+
+                Text(mode.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(2)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.white.opacity(0.45))
             }
+            .scaleEffect(appear ? 1 : 0.92)
         }
-        .animation(.easeOut(duration: 0.25), value: progress)
-    }
-
-    private var bar: some View {
-        GeometryReader { geo in
-            let width = max(0, geo.size.width * progress)
-
-            ZStack(alignment: .leading) {
-                // Relleno de la barra.
-                Rectangle()
-                    .fill(red)
-                    .frame(width: width, height: barHeight)
-                    .shadow(color: red.opacity(0.9), radius: 5)
-
-                // "Peg" luminoso en el borde de avance (ligeramente inclinado).
-                Rectangle()
-                    .fill(red)
-                    .frame(width: 22, height: barHeight)
-                    .shadow(color: red, radius: 10)
-                    .shadow(color: red, radius: 4)
-                    .rotationEffect(.degrees(3))
-                    .offset(x: width - 22)
-                    .opacity(progress > 0.01 && progress < 0.999 ? 1 : 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { appear = true }
         }
-        .frame(height: barHeight)
     }
 }
 
 #Preview {
-    LoadingView(progress: 0.4)
+    LoadingView(mode: .music, progress: 0.4)
         .frame(width: 500, height: 300)
 }

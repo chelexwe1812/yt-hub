@@ -40,7 +40,7 @@ struct ContentView: View {
             YouTubeWebView(mode: mode, player: player, isLoading: $isLoading, progress: $progress)
 
             if isLoading {
-                LoadingView(progress: progress)
+                LoadingView(mode: mode, progress: progress)
                     .transition(.opacity)
             } else {
                 // Controles superpuestos sobre el contenido. El switch reaparece en

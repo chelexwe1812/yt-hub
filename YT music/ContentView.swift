@@ -35,65 +35,51 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // El WebView permanece siempre montado (aunque quede oculto tras el
-            // mini reproductor) para que el audio no se interrumpa.
+            // El WebView vive siempre en la ventana principal. Al pasar al mini,
+            // esta ventana se OCULTA (no se cierra), así el audio no se interrumpe.
             YouTubeWebView(mode: mode, player: player, isLoading: $isLoading, progress: $progress)
 
-            if !isMini {
-                if isLoading {
-                    LoadingView(progress: progress)
-                        .transition(.opacity)
-                } else {
-                    // Controles superpuestos sobre el contenido (fuera de la barra
-                    // de título). El switch reaparece en distinta posición según
-                    // el modo para no chocar con la interfaz propia de YouTube.
-                    ServiceSwitch(mode: $mode)
-                        .padding(.top, mode == .videos ? 13 : 17)
-                        .padding(mode == .videos ? .leading : .trailing,
-                                 mode == .videos ? 205 : 150)
-                        .frame(maxWidth: .infinity,
-                               alignment: mode == .videos ? .leading : .trailing)
-                        .transition(.opacity)
-
-                    // Botón para colapsar al mini reproductor, arriba a la derecha.
-                    if mode == .music {
-                        collapseButton
-                            .padding(.top, 17)
-                            .padding(.trailing, 16)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .transition(.opacity)
-                    }
-                }
+            if isLoading {
+                LoadingView(progress: progress)
+                    .transition(.opacity)
             } else {
-                MiniPlayerView(player: player) {
-                    withAnimation(.easeInOut(duration: 0.35)) { isMini = false }
+                // Controles superpuestos sobre el contenido. El switch reaparece en
+                // distinta posición según el modo para no chocar con la interfaz de YouTube.
+                ServiceSwitch(mode: $mode)
+                    .padding(.top, mode == .videos ? 13 : 17)
+                    .padding(mode == .videos ? .leading : .trailing,
+                             mode == .videos ? 205 : 150)
+                    .frame(maxWidth: .infinity,
+                           alignment: mode == .videos ? .leading : .trailing)
+                    .transition(.opacity)
+
+                // Botón para colapsar al mini reproductor, arriba a la derecha.
+                if mode == .music {
+                    collapseButton
+                        .padding(.top, 17)
+                        .padding(.trailing, 16)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.opacity)
                 }
-                // Cuadrado exacto y centrado dentro del área: evita que el
-                // anclaje topLeading del ZStack descentre el contenido cuando el
-                // hosting no coincide con el ancho real de la ventana.
-                .frame(width: miniSize, height: miniSize)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity)
             }
         }
-        .frame(minWidth: isMini ? miniSize : activeMinSize.width,
-               maxWidth: isMini ? miniSize : .infinity,
-               minHeight: isMini ? miniSize : activeMinSize.height,
-               maxHeight: isMini ? miniSize : .infinity)
-        .background(TitleBarConfigurator(isMini: isMini, miniSize: miniSize,
-                                         fullMinSize: activeMinSize, fullSize: fullSize))
+        .frame(minWidth: activeMinSize.width, maxWidth: .infinity,
+               minHeight: activeMinSize.height, maxHeight: .infinity)
+        // Gestiona la ventana principal y la ventana independiente del mini reproductor.
+        .background(WindowManager(isMini: isMini, miniSize: miniSize, player: player,
+                                  onExpand: { isMini = false },
+                                  fullMinSize: activeMinSize, fullSize: fullSize))
         .animation(.easeInOut(duration: 0.3), value: isLoading)
-        .animation(.easeInOut(duration: 0.35), value: isMini)
         .onChange(of: mode) {
             progress = 0
             isLoading = true
         }
     }
 
-    /// Botón de vidrio que colapsa la ventana al mini reproductor.
+    /// Botón de vidrio que abre el mini reproductor (oculta esta ventana).
     private var collapseButton: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.35)) { isMini = true }
+            isMini = true
         } label: {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
                 .font(.system(size: 12, weight: .semibold))
@@ -106,15 +92,23 @@ struct ContentView: View {
     }
 }
 
-/// Oculta el texto del título y gestiona la ventana al entrar/salir del mini
-/// reproductor. En modo mini: encoge la ventana al cuadrado de la portada,
-/// oculta por completo la barra de título (incluidos los botones semáforo) y la
-/// deja flotando sobre las demás. En modo grande: fija la ventana a un tamaño
-/// predeterminado (no redimensionable) para que la posición de los botones sea
-/// siempre consistente. Ambas transiciones anclan la esquina superior izquierda.
-private struct TitleBarConfigurator: NSViewRepresentable {
+/// Gestiona las DOS ventanas de la app:
+///
+/// · **Principal** (la del `WindowGroup`): aloja el `WKWebView`. Oculta el texto
+///   del título, aplica el tamaño mínimo según el modo y, al crecer por un cambio
+///   de modo, se mantiene dentro de la pantalla.
+/// · **Mini**: una ventana APARTE, sin barra de título (borderless), cuadrada, no
+///   redimensionable, con esquinas redondeadas y sombra. Muestra la portada
+///   (`MiniPlayerView`) y tiene su propia posición, independiente de la principal
+///   (estilo Apple Music).
+///
+/// Al entrar en mini se oculta la principal (el WebView sigue vivo → el audio no
+/// se corta) y se muestra la mini; al salir, a la inversa.
+private struct WindowManager: NSViewRepresentable {
     var isMini: Bool
     var miniSize: CGFloat
+    var player: WebPlayerController
+    var onExpand: () -> Void
     var fullMinSize: CGSize
     var fullSize: CGSize
 
@@ -125,88 +119,105 @@ private struct TitleBarConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         let isMini = isMini
         let miniSize = miniSize
+        let player = player
+        let onExpand = onExpand
         let fullMinSize = fullMinSize
         let fullSize = fullSize
         let coordinator = context.coordinator
         DispatchQueue.main.async {
-            guard let window = nsView.window else { return }
-            window.titleVisibility = .hidden
-            window.level = .normal
+            guard let mainWindow = nsView.window else { return }
 
-            // Mantiene la barra de título también en modo mini (su presencia
-            // fuerza un layout correcto del contenido).
-            window.styleMask.remove(.fullSizeContentView)
-            window.titlebarAppearsTransparent = false
-            window.isMovableByWindowBackground = false
+            // --- Ventana principal ---
+            mainWindow.titleVisibility = .hidden
+            mainWindow.level = .normal
+            mainWindow.styleMask.remove(.fullSizeContentView)
+            mainWindow.titlebarAppearsTransparent = false
+            mainWindow.isMovableByWindowBackground = false
+            mainWindow.styleMask.insert(.resizable)
             for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-                window.standardWindowButton(button)?.isHidden = false
+                mainWindow.standardWindowButton(button)?.isHidden = false
             }
-            // Bloqueo de tamaño reforzado en CADA actualización (no solo en la
-            // transición): SwiftUI gestiona la NSWindow del WindowGroup y puede
-            // revertir estos ajustes, por lo que hay que re-aplicarlos siempre.
-            // Con contentMinSize == contentMaxSize la ventana no se puede
-            // redimensionar aunque el flag .resizable siguiera activo.
-            let mini = NSSize(width: miniSize, height: miniSize)
-            if isMini {
-                window.styleMask.remove(.resizable)
-                window.contentMinSize = mini
-                window.contentMaxSize = mini
-            } else {
-                window.styleMask.insert(.resizable)
-                window.contentMinSize = NSSize(width: fullMinSize.width, height: fullMinSize.height)
-                window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+            mainWindow.contentMinSize = NSSize(width: fullMinSize.width, height: fullMinSize.height)
+            mainWindow.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                                height: CGFloat.greatestFiniteMagnitude)
-            }
 
-            // Al cambiar de modo cambia el mínimo (p. ej. Música→Videos) y la
-            // ventana debe crecer para respetarlo. Lo hacemos NOSOTROS —anclando
-            // la esquina superior izquierda y reubicando dentro de la pantalla—
-            // para que al agrandarse no se salga del monitor. Se ejecuta también
-            // fuera de la transición de mini, por eso va antes del guard.
-            if !isMini, coordinator.lastIsMini != nil,
-               coordinator.lastFullMinSize != fullMinSize {
+            if coordinator.lastFullMinSize == nil {
+                // Primer lanzamiento: tamaño por defecto, dentro de pantalla.
                 coordinator.lastFullMinSize = fullMinSize
-                let content = window.contentRect(forFrameRect: window.frame).size
+                let opened = frame(for: NSSize(width: fullSize.width, height: fullSize.height),
+                                   anchoredTopLeftOf: mainWindow.frame, in: mainWindow)
+                mainWindow.setFrame(clampedToScreen(opened, in: mainWindow), display: true)
+            } else if coordinator.lastFullMinSize != fullMinSize {
+                // Cambio de modo: si el mínimo crece, agranda anclando la esquina
+                // superior izquierda y manténla dentro de la pantalla (no se sale).
+                coordinator.lastFullMinSize = fullMinSize
+                let content = mainWindow.contentRect(forFrameRect: mainWindow.frame).size
                 if content.width < fullMinSize.width - 0.5 || content.height < fullMinSize.height - 0.5 {
                     let target = NSSize(width: max(content.width, fullMinSize.width),
                                         height: max(content.height, fullMinSize.height))
-                    let grown = frame(for: target, anchoredTopLeftOf: window.frame, in: window)
-                    window.setFrame(clampedToScreen(grown, in: window), display: true, animate: true)
+                    let grown = frame(for: target, anchoredTopLeftOf: mainWindow.frame, in: mainWindow)
+                    mainWindow.setFrame(clampedToScreen(grown, in: mainWindow), display: true, animate: true)
                 }
             }
 
-            // El resto solo actúa en la transición entre modos.
-            guard coordinator.lastIsMini != isMini else { return }
-            let wasMini = coordinator.lastIsMini
-            coordinator.lastIsMini = isMini
+            // --- Ventana mini (se crea la primera vez) ---
+            let miniWindow: NSWindow
+            if let existing = coordinator.miniWindow {
+                miniWindow = existing
+            } else {
+                miniWindow = Self.makeMiniWindow(side: miniSize, player: player, onExpand: onExpand)
+                coordinator.miniWindow = miniWindow
+            }
 
             if isMini {
-                // Al colapsar: recuerda la posición/tamaño de la ventana normal y
-                // muestra el mini en SU PROPIA posición recordada (independiente,
-                // como en Apple Music). La primera vez lo ancla a la esquina
-                // superior izquierda de la ventana normal. Siempre dentro de pantalla.
-                coordinator.savedFullFrame = window.frame
-                let target = coordinator.savedMiniFrame
-                    ?? frame(for: mini, anchoredTopLeftOf: window.frame, in: window)
-                window.setFrame(clampedToScreen(target, in: window), display: true, animate: true)
-            } else {
-                if wasMini == true {
-                    // Al expandir: recuerda dónde quedó el mini (posición propia) y
-                    // restaura la ventana normal en SU posición, sin salirse de pantalla.
-                    coordinator.savedMiniFrame = window.frame
-                    let saved = coordinator.savedFullFrame
-                        ?? frame(for: NSSize(width: fullSize.width, height: fullSize.height),
-                                 anchoredTopLeftOf: window.frame, in: window)
-                    window.setFrame(clampedToScreen(saved, in: window), display: true, animate: true)
-                } else if wasMini == nil {
-                    // Primer lanzamiento: abre en el tamaño predeterminado.
-                    coordinator.lastFullMinSize = fullMinSize
-                    let full = NSSize(width: fullSize.width, height: fullSize.height)
-                    let opened = frame(for: full, anchoredTopLeftOf: window.frame, in: window)
-                    window.setFrame(clampedToScreen(opened, in: window), display: true, animate: false)
+                // Coloca el mini la primera vez de la sesión (si el autosave no le
+                // dio posición): cerca de la esquina superior izquierda de la
+                // principal, dentro de la pantalla. Después conserva su posición.
+                if !miniWindow.isVisible && !coordinator.miniPlacedOnce {
+                    coordinator.miniPlacedOnce = true
+                    if miniWindow.frame.origin == .zero {
+                        let start = NSRect(x: mainWindow.frame.minX + 24,
+                                           y: mainWindow.frame.maxY - miniSize - 24,
+                                           width: miniSize, height: miniSize)
+                        miniWindow.setFrame(clampedToScreen(start, in: mainWindow), display: false)
+                    }
                 }
+                miniWindow.makeKeyAndOrderFront(nil)
+                mainWindow.orderOut(nil)
+            } else {
+                if miniWindow.isVisible { miniWindow.orderOut(nil) }
+                if !mainWindow.isVisible { mainWindow.makeKeyAndOrderFront(nil) }
             }
         }
+    }
+
+    /// Crea la ventana mini: borderless (sin barra de título), cuadrada, no
+    /// redimensionable, con esquinas redondeadas y sombra, y arrastrable desde la
+    /// portada. Aloja la `MiniPlayerView` compartiendo el mismo reproductor.
+    private static func makeMiniWindow(side: CGFloat, player: WebPlayerController,
+                                       onExpand: @escaping () -> Void) -> NSWindow {
+        let window = MiniPanel(
+            contentRect: NSRect(x: 0, y: 0, width: side, height: side),
+            styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.isMovableByWindowBackground = true
+        window.level = .normal
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.fullScreenAuxiliary]
+
+        // Contenido: la portada, recortada a esquinas redondeadas para que la
+        // ventana borderless se vea como el mini de Apple Music.
+        let root = MiniPlayerView(player: player, onExpand: onExpand)
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: side, height: side)
+        window.contentView = host
+        window.setFrameAutosaveName("YTMusicMiniPlayer")
+        return window
     }
 
     /// Frame que da a la ventana un contenido de `contentSize` manteniendo fija
@@ -239,15 +250,20 @@ private struct TitleBarConfigurator: NSViewRepresentable {
     }
 
     final class Coordinator {
-        /// Último modo aplicado; distingue la transición.
-        var lastIsMini: Bool?
-        /// Frame de la ventana normal, para restaurarlo al expandir.
-        var savedFullFrame: NSRect?
-        /// Frame del mini reproductor: su posición es independiente de la normal.
-        var savedMiniFrame: NSRect?
-        /// Último mínimo aplicado en modo grande; detecta el cambio de modo.
+        /// Ventana del mini reproductor (independiente de la principal).
+        var miniWindow: NSWindow?
+        /// Ya se colocó el mini al menos una vez en esta sesión.
+        var miniPlacedOnce = false
+        /// Último mínimo aplicado en la principal; detecta el cambio de modo.
         var lastFullMinSize: CGSize?
     }
+}
+
+/// Ventana sin borde que SÍ puede volverse key/main, para que los controles del
+/// mini (botones, slider y el arrastre de la barra de progreso) reciban eventos.
+private final class MiniPanel: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
 }
 
 /// Mini reproductor: ventana cuadrada que muestra únicamente la portada del

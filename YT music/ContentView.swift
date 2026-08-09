@@ -158,25 +158,52 @@ private struct TitleBarConfigurator: NSViewRepresentable {
                                                height: CGFloat.greatestFiniteMagnitude)
             }
 
+            // Al cambiar de modo cambia el mínimo (p. ej. Música→Videos) y la
+            // ventana debe crecer para respetarlo. Lo hacemos NOSOTROS —anclando
+            // la esquina superior izquierda y reubicando dentro de la pantalla—
+            // para que al agrandarse no se salga del monitor. Se ejecuta también
+            // fuera de la transición de mini, por eso va antes del guard.
+            if !isMini, coordinator.lastIsMini != nil,
+               coordinator.lastFullMinSize != fullMinSize {
+                coordinator.lastFullMinSize = fullMinSize
+                let content = window.contentRect(forFrameRect: window.frame).size
+                if content.width < fullMinSize.width - 0.5 || content.height < fullMinSize.height - 0.5 {
+                    let target = NSSize(width: max(content.width, fullMinSize.width),
+                                        height: max(content.height, fullMinSize.height))
+                    let grown = frame(for: target, anchoredTopLeftOf: window.frame, in: window)
+                    window.setFrame(clampedToScreen(grown, in: window), display: true, animate: true)
+                }
+            }
+
             // El resto solo actúa en la transición entre modos.
             guard coordinator.lastIsMini != isMini else { return }
             let wasMini = coordinator.lastIsMini
             coordinator.lastIsMini = isMini
 
             if isMini {
-                // Guarda el tamaño actual y colapsa la ventana al cuadrado del mini.
-                coordinator.savedFrame = window.frame
-                window.setFrame(frame(for: mini, anchoredTopLeftOf: window.frame, in: window),
-                                display: true, animate: true)
+                // Al colapsar: recuerda la posición/tamaño de la ventana normal y
+                // muestra el mini en SU PROPIA posición recordada (independiente,
+                // como en Apple Music). La primera vez lo ancla a la esquina
+                // superior izquierda de la ventana normal. Siempre dentro de pantalla.
+                coordinator.savedFullFrame = window.frame
+                let target = coordinator.savedMiniFrame
+                    ?? frame(for: mini, anchoredTopLeftOf: window.frame, in: window)
+                window.setFrame(clampedToScreen(target, in: window), display: true, animate: true)
             } else {
-                if wasMini == true, let saved = coordinator.savedFrame {
-                    // Al volver del mini, restaura el tamaño que tenía antes.
-                    window.setFrame(saved, display: true, animate: true)
+                if wasMini == true {
+                    // Al expandir: recuerda dónde quedó el mini (posición propia) y
+                    // restaura la ventana normal en SU posición, sin salirse de pantalla.
+                    coordinator.savedMiniFrame = window.frame
+                    let saved = coordinator.savedFullFrame
+                        ?? frame(for: NSSize(width: fullSize.width, height: fullSize.height),
+                                 anchoredTopLeftOf: window.frame, in: window)
+                    window.setFrame(clampedToScreen(saved, in: window), display: true, animate: true)
                 } else if wasMini == nil {
                     // Primer lanzamiento: abre en el tamaño predeterminado.
+                    coordinator.lastFullMinSize = fullMinSize
                     let full = NSSize(width: fullSize.width, height: fullSize.height)
-                    window.setFrame(frame(for: full, anchoredTopLeftOf: window.frame, in: window),
-                                    display: true, animate: false)
+                    let opened = frame(for: full, anchoredTopLeftOf: window.frame, in: window)
+                    window.setFrame(clampedToScreen(opened, in: window), display: true, animate: false)
                 }
             }
         }
@@ -191,11 +218,35 @@ private struct TitleBarConfigurator: NSViewRepresentable {
         return NSRect(origin: origin, size: frameSize)
     }
 
+    /// Desplaza `frame` lo mínimo necesario para que quede completamente dentro
+    /// del área visible de la pantalla de la ventana (respetando menú y Dock).
+    private func clampedToScreen(_ frame: NSRect, in window: NSWindow) -> NSRect {
+        guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return frame }
+        var f = frame
+        if f.width <= visible.width {
+            if f.maxX > visible.maxX { f.origin.x = visible.maxX - f.width }
+            if f.minX < visible.minX { f.origin.x = visible.minX }
+        } else {
+            f.origin.x = visible.minX
+        }
+        if f.height <= visible.height {
+            if f.maxY > visible.maxY { f.origin.y = visible.maxY - f.height }
+            if f.minY < visible.minY { f.origin.y = visible.minY }
+        } else {
+            f.origin.y = visible.maxY - f.height
+        }
+        return f
+    }
+
     final class Coordinator {
         /// Último modo aplicado; distingue la transición.
         var lastIsMini: Bool?
-        /// Tamaño de la ventana antes de colapsar, para restaurarlo al expandir.
-        var savedFrame: NSRect?
+        /// Frame de la ventana normal, para restaurarlo al expandir.
+        var savedFullFrame: NSRect?
+        /// Frame del mini reproductor: su posición es independiente de la normal.
+        var savedMiniFrame: NSRect?
+        /// Último mínimo aplicado en modo grande; detecta el cambio de modo.
+        var lastFullMinSize: CGSize?
     }
 }
 

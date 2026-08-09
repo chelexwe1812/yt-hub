@@ -21,9 +21,17 @@ struct ContentView: View {
 
     /// Lado del mini reproductor (ventana cuadrada con la portada).
     private let miniSize: CGFloat = 300
-    /// Tamaño fijo de la ventana en modo grande, para que la posición de los
-    /// botones sea siempre consistente.
-    private let fullSize = CGSize(width: 1100, height: 720)
+    /// Mínimo del contenido en modo Videos: la interfaz completa de YouTube
+    /// necesita este ancho para que nuestros controles superpuestos no colisionen
+    /// con los suyos.
+    private let videosMinSize = CGSize(width: 1340, height: 860)
+    /// Mínimo del contenido en modo Música, medido sobre la ventana de referencia.
+    private let musicMinSize = CGSize(width: 1120, height: 770)
+    /// Tamaño de apertura por defecto en modo grande (≥ mínimo activo).
+    private let fullSize = CGSize(width: 1360, height: 880)
+
+    /// Mínimo de ventana según el modo actual.
+    private var activeMinSize: CGSize { mode == .videos ? videosMinSize : musicMinSize }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -35,6 +43,26 @@ struct ContentView: View {
                 if isLoading {
                     LoadingView(progress: progress)
                         .transition(.opacity)
+                } else {
+                    // Controles superpuestos sobre el contenido (fuera de la barra
+                    // de título). El switch reaparece en distinta posición según
+                    // el modo para no chocar con la interfaz propia de YouTube.
+                    ServiceSwitch(mode: $mode)
+                        .padding(.top, mode == .videos ? 13 : 17)
+                        .padding(mode == .videos ? .leading : .trailing,
+                                 mode == .videos ? 205 : 150)
+                        .frame(maxWidth: .infinity,
+                               alignment: mode == .videos ? .leading : .trailing)
+                        .transition(.opacity)
+
+                    // Botón para colapsar al mini reproductor, arriba a la derecha.
+                    if mode == .music {
+                        collapseButton
+                            .padding(.top, 17)
+                            .padding(.trailing, 16)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .transition(.opacity)
+                    }
                 }
             } else {
                 MiniPlayerView(player: player) {
@@ -48,30 +76,17 @@ struct ContentView: View {
                 .transition(.opacity)
             }
         }
-        .frame(minWidth: isMini ? miniSize : 900,
+        .frame(minWidth: isMini ? miniSize : activeMinSize.width,
                maxWidth: isMini ? miniSize : .infinity,
-               minHeight: isMini ? miniSize : 640,
+               minHeight: isMini ? miniSize : activeMinSize.height,
                maxHeight: isMini ? miniSize : .infinity)
-        .background(TitleBarConfigurator(isMini: isMini, miniSize: miniSize, fullSize: fullSize))
+        .background(TitleBarConfigurator(isMini: isMini, miniSize: miniSize,
+                                         fullMinSize: activeMinSize, fullSize: fullSize))
         .animation(.easeInOut(duration: 0.3), value: isLoading)
         .animation(.easeInOut(duration: 0.35), value: isMini)
         .onChange(of: mode) {
             progress = 0
             isLoading = true
-        }
-        // Los controles viven en la barra de título (chrome de la ventana), así
-        // nunca colisionan con la interfaz propia de YouTube al redimensionar.
-        .toolbar {
-            if !isMini && !isLoading {
-                ToolbarItem(placement: .principal) {
-                    ServiceSwitch(mode: $mode)
-                }
-                if mode == .music {
-                    ToolbarItem(placement: .primaryAction) {
-                        collapseButton
-                    }
-                }
-            }
         }
     }
 
@@ -100,6 +115,7 @@ struct ContentView: View {
 private struct TitleBarConfigurator: NSViewRepresentable {
     var isMini: Bool
     var miniSize: CGFloat
+    var fullMinSize: CGSize
     var fullSize: CGSize
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -109,6 +125,7 @@ private struct TitleBarConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         let isMini = isMini
         let miniSize = miniSize
+        let fullMinSize = fullMinSize
         let fullSize = fullSize
         let coordinator = context.coordinator
         DispatchQueue.main.async {
@@ -136,7 +153,7 @@ private struct TitleBarConfigurator: NSViewRepresentable {
                 window.contentMaxSize = mini
             } else {
                 window.styleMask.insert(.resizable)
-                window.contentMinSize = NSSize(width: 900, height: 640)
+                window.contentMinSize = NSSize(width: fullMinSize.width, height: fullMinSize.height)
                 window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                                height: CGFloat.greatestFiniteMagnitude)
             }
